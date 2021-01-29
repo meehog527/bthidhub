@@ -3,41 +3,71 @@ import asyncio_glib
 import os
 import signal
 import time
+import evdev
+from evdev import uinput, ecodes as e
+from hidtools.uhid import UHIDDevice
+
 
 from gmqtt import Client as MQTTClient
 
 class MQTTCli:
-    def __init__(self, loop: asyncio.AbstractEventLoop, device_registry):
+#    def __init__(self, loop: asyncio.AbstractEventLoop, device_registry, broker, user, pw):
+    def __init__(self, loop: asyncio.AbstractEventLoop, broker, user, pw, device_registry):
         self.loop = loop
         self.device_registry = device_registry
-        self.client = MQTTClient("client-id")
+        self.broker = broker
+        self.user = user
+        self.pw = pw
+        self.STOP = asyncio.Event()
+        asyncio.run_coroutine_threadsafe(self.connect(), loop=self.loop)
+        print("MQTTCli Init")
 
-        self.client.on_connect = self.on_connect
-        self.client.on_message = self.on_message
-        self.client.on_disconnect = self.on_disconnect
-        self.client.on_subscribe = self.on_subscribe
+    async def connect(self):
+        print("MQTTCli connected initiated")  
+        try:
+            self.client = MQTTClient("BTHIDHub")
+            self.client.set_auth_credentials(self.user, self.pw)
+            self.client.on_connect = self.on_connect
+            self.client.on_message = self.on_message
+            self.client.on_disconnect = self.on_disconnect
+            self.client.on_subscribe = self.on_subscribe
+            await self.client.connect(self.broker)
+            await self.STOP.wait()
+            await self.client.disconnect()
+        except Exception as exc:
+            print("MQTTCli connection error ",exc)
 
-    async def connect():
-        user="homeassistant"
-        pw="oochi8eengehuYohgeBu1foobooceeZ7to5ieng7pis8saephaetah0hoaphiK3F"
-        broker_host = "192.168.50.95"
-        self.client.set_auth_credentials(user, pw)
-        await self.client.connect(broker_host)
-
-    def on_connect(client, flags, rc, properties):
-        print('Connected')
+    def on_connect(self,client, flags, rc, properties):
+        print('MQTTCli connected')
         self.client.subscribe('home-assistant/command', qos=0)
 
-    def on_message(client, topic, payload, qos, properties):
-        print('RECV MSG:', payload)
-        device_registry.bluetooth_devices.send_message(payload, True, False)
-        publish('home-assistant/response', payload, qos=1)
+    async def on_message(self, client, topic, payload, qos, properties):
+        print('MQTTCli - RECV MSG:', payload)
+        try:
+            self.device_registry.bluetooth_devices.send_message(payload, True, False)
+            self.client.publish('home-assistant/response', payload, qos=1)
+        except Exception as exc:
+            print("MQTTCli connection error ",exc)
+            self.client.publish('home-assistant/response', payload, qos=1)
+        pass 
+        return 0
         
-    def on_disconnect(client, packet, exc=None):
-        print('Disconnected')
+    def on_disconnect(self, client, packet, exc=None):
+        print('MQTTCli disconnected')
 
-    def on_subscribe(client, mid, qos, properties):
-        print('SUBSCRIBED')
+    def on_subscribe(self, client, mid, qos, properties):
+        print('MQTTCli subscribed')
 
     def ask_exit(*args):
-        STOP.set()
+        print('MQTTCli ask exit')
+        self.STOP.set()
+    
+    def finalise(self):
+        #close device
+        self.hidraw_device.destroy()
+        self.hidraw_device = None
+
+        print("MQTTCli finalised")
+
+    def __del__(self):
+        print("MQTTCli removed")
